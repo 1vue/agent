@@ -1,0 +1,6 @@
+numpy
+Pillow
+openai
+pycocotools
+torch
+opencv-python
