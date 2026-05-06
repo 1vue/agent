@@ -32,17 +32,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--meta-json",
-        default="../../dataset/mevis/valid/meta_expressions.json",
+        # default="../../dataset/mevis/valid/meta_expressions.json",
+        default="../../dataset/ref-youtube/meta_expressions/valid/valid_filtered.json",
         help="Path to meta_expressions_text_release.json",
     )
     parser.add_argument(
         "--dataset-root",
-        default="../../dataset/mevis/valid",
+        # default="../../dataset/mevis/valid",
+        default="../../dataset/ref-youtube/valid",
         help="Dataset root directory containing JPEGImages/",
     )
     parser.add_argument(
         "--error-dir",
-        default="outputs/batch_ark_video_qa/_errors",
+        default="outputs/ref-youtube/batch_ark_video_qa/_errors",
         help="Directory containing per-task error JSON files",
     )
     parser.add_argument(

@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--api-key",
+        # default=os.environ.get("XIAOMI_API_KEY").strip(),
         default=os.environ.get("VOLCES_API_KEY").strip(),
         # default=os.environ.get("XUNFEI_API_KEY").strip(),
         help="LLM API key; can also come from SAM3_AGENT_API_KEY",

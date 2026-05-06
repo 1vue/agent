@@ -30,6 +30,9 @@ DEFAULT_CHECKPOINT = os.environ.get("SAM3_CHECKPOINT", "checkpoints/sam3.pt")
 # DEFAULT_MODEL = "doubao-seed-2-0-mini-260215"
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
 DEFAULT_MODEL = "doubao-seed-2.0-pro"
+# 小米
+# DEFAULT_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
+# DEFAULT_MODEL = "mimo-v2.5-pro"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -88,6 +91,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--api-key",
+        # default=os.environ.get("XIAOMI_API_KEY").strip(),
         default=os.environ.get("VOLCES_API_KEY").strip(),
         # default=os.environ.get("XUNFEI_API_KEY").strip(),
         help="LLM API key; can also come from SAM3_AGENT_API_KEY",

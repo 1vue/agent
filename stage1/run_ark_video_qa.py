@@ -16,8 +16,10 @@ from PIL import Image
 
 # DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 # DEFAULT_MODEL = "qwen3.5-plus-2026-02-15"
-DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
-DEFAULT_MODEL = "doubao-seed-2.0-pro"
+# DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
+# DEFAULT_MODEL = "doubao-seed-2.0-pro"
+DEFAULT_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
+DEFAULT_MODEL = "mimo-v2.5-pro"
 AUTO_DOWNSAMPLE_THRESHOLD = 70
 AUTO_DOWNSAMPLE_STRIDE = 2
 JSON_OUTPUT_INSTRUCTION = """## Output Format
@@ -438,7 +440,7 @@ def call_api(payload: dict[str, Any], base_url: str):
     api_key = (
             os.environ.get("ARK_API_KEY", "").strip()
             or os.environ.get("OPENAI_API_KEY", "").strip()
-            or os.environ.get("VOLCES_API_KEY", "").strip()
+            or os.environ.get("XIAOMI_API_KEY", "").strip()
     )
     if not api_key:
         raise RuntimeError("Set ARK_API_KEY, OPENAI_API_KEY, or DASHSCOPE_API_KEY before calling the API")
