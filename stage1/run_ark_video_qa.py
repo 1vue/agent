@@ -8,18 +8,19 @@ import base64
 import json
 import mimetypes
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import io
 from PIL import Image
 
-# DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-# DEFAULT_MODEL = "qwen3.5-plus-2026-02-15"
-# DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
-# DEFAULT_MODEL = "doubao-seed-2.0-pro"
-DEFAULT_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
-DEFAULT_MODEL = "mimo-v2.5-pro"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from api_config import DEFAULT_BASE_URL, DEFAULT_MODEL, add_api_profile_args, apply_api_profile_defaults
+
 AUTO_DOWNSAMPLE_THRESHOLD = 70
 AUTO_DOWNSAMPLE_STRIDE = 2
 JSON_OUTPUT_INSTRUCTION = """## Output Format
@@ -104,8 +105,10 @@ def parse_args() -> argparse.Namespace:
         default="json",
         help="json: append a strict JSON output contract; text: leave the prompt unchanged",
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Ark model name")
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Ark API base URL")
+    add_api_profile_args(parser)
+    parser.add_argument("--model", default=None, help="Model name; defaults to selected API profile")
+    parser.add_argument("--base-url", default=None, help="API base URL; defaults to selected API profile")
+    parser.add_argument("--api-key", default=None, help="API key; defaults to selected profile api_key_env")
     parser.add_argument(
         "--save-payload",
         help="Optional path to save the generated payload JSON before sending",
@@ -119,7 +122,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Only build and preview the messages without calling the API",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    return apply_api_profile_defaults(
+        args,
+        fallback_key_env=("ARK_API_KEY", "OPENAI_API_KEY", "VOLCES_API_KEY", "DASHSCOPE_API_KEY"),
+    )
 
 
 def build_prompt_text(
@@ -431,21 +438,24 @@ def format_response_text(
     return json.dumps(parsed, ensure_ascii=False, indent=2)
 
 
-def call_api(payload: dict[str, Any], base_url: str):
+def call_api(payload: dict[str, Any], base_url: str, api_key: str | None = None):
     try:
         from openai import OpenAI
     except ImportError as exc:
         raise RuntimeError("openai package is required for non-dry-run mode") from exc
 
-    api_key = (
+    resolved_api_key = api_key or (
             os.environ.get("ARK_API_KEY", "").strip()
             or os.environ.get("OPENAI_API_KEY", "").strip()
+            or os.environ.get("VOLCES_API_KEY", "").strip()
+            or os.environ.get("DASHSCOPE_API_KEY", "").strip()
             or os.environ.get("XIAOMI_API_KEY", "").strip()
+            or os.environ.get("XUNFEI_API_KEY", "").strip()
     )
-    if not api_key:
-        raise RuntimeError("Set ARK_API_KEY, OPENAI_API_KEY, or DASHSCOPE_API_KEY before calling the API")
+    if not resolved_api_key:
+        raise RuntimeError("Pass --api-key or set the api_key_env used by the selected API profile")
 
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    client = OpenAI(base_url=base_url, api_key=resolved_api_key)
     return client.chat.completions.create(**payload)
 
 
@@ -478,7 +488,7 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    response = call_api(bundle.payload, args.base_url)
+    response = call_api(bundle.payload, args.base_url, args.api_key)
     answer = extract_answer(response)
     print("\nassistant_response:")
     try:

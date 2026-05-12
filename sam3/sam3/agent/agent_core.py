@@ -538,7 +538,7 @@ def agent_inference(
         # make sure there can never be more than 2 images in the context
         assert count_images(messages) <= 2
         generation_count += 1
-        if generation_count > max_generations:
+        if generation_count >= max_generations:
             raise ValueError(
                 f"Exceeded maximum number of allowed generation requests ({max_generations})"
             )

@@ -12,27 +12,19 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from api_config import DEFAULT_BASE_URL, DEFAULT_MODEL, add_api_profile_args, apply_api_profile_defaults
+
 
 DEFAULT_BATCH_ROOT = "outputs/batch_ark_video_qa"
 DEFAULT_DATASET_ROOT = "../../dataset/mevis/valid"
+# DEFAULT_DATASET_ROOT = "../../dataset/ref-youtube/valid"
 DEFAULT_OUTPUT_ROOT = "agent_output"
 DEFAULT_SAM3_OFFICIAL_ROOT = "sam3"
 DEFAULT_CHECKPOINT = os.environ.get("SAM3_CHECKPOINT", "checkpoints/sam3.pt")
-# 千问百炼
-# DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-# DEFAULT_MODEL = "qwen3.5-plus"
-# 讯飞
-# DEFAULT_BASE_URL = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
-# DEFAULT_MODEL = "astron-code-latest"
-
-# 豆包
-# DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-# DEFAULT_MODEL = "doubao-seed-2-0-mini-260215"
-DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
-DEFAULT_MODEL = "doubao-seed-2.0-pro"
-# 小米
-# DEFAULT_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
-# DEFAULT_MODEL = "mimo-v2.5-pro"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -79,22 +71,21 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Confidence threshold for the SAM3 image processor",
     )
+    add_api_profile_args(parser)
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("SAM3_AGENT_BASE_URL", DEFAULT_BASE_URL),
-        help="OpenAI-compatible LLM base URL",
+        default=os.environ.get("SAM3_AGENT_BASE_URL"),
+        help="OpenAI-compatible LLM base URL; defaults to selected API profile",
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("SAM3_AGENT_MODEL", DEFAULT_MODEL),
-        help="LLM model name",
+        default=os.environ.get("SAM3_AGENT_MODEL"),
+        help="LLM model name; defaults to selected API profile",
     )
     parser.add_argument(
         "--api-key",
-        # default=os.environ.get("XIAOMI_API_KEY").strip(),
-        default=os.environ.get("VOLCES_API_KEY").strip(),
-        # default=os.environ.get("XUNFEI_API_KEY").strip(),
-        help="LLM API key; can also come from SAM3_AGENT_API_KEY",
+        default=os.environ.get("SAM3_AGENT_API_KEY"),
+        help="LLM API key; defaults to selected profile api_key_env",
     )
     parser.add_argument(
         "--extra-body-json",
@@ -128,7 +119,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Overwrite existing pred.json outputs",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--max-generations",
+        type=int,
+        default=10,
+        help="Maximum number of MLLM generation rounds allowed inside the SAM3 agent",
+    )
+    args = parser.parse_args()
+    return apply_api_profile_defaults(args)
 
 def save_json(data: Any, path: str | Path) -> None:
     out_path = Path(path)
@@ -205,7 +203,7 @@ def select_result_items(
 def main() -> int:
     args = parse_args()
     if not args.api_key:
-        raise ValueError("Missing API key; pass --api-key or set SAM3_AGENT_API_KEY")
+        raise ValueError("Missing API key; pass --api-key or set the selected profile api_key_env")
     extra_body = json.loads(args.extra_body_json) if args.extra_body_json else None
     prompt_source = "object_name" if args.use_object_name else args.prompt_source
 
@@ -306,6 +304,7 @@ def main() -> int:
             send_generate_request=send_generate_request,
             call_sam_service=call_sam_service,
             output_dir=str(item_dir),
+            max_generations=args.max_generations,
             debug=args.debug,
         )
 

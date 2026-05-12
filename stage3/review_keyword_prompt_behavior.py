@@ -5,14 +5,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import sys
 from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 from openai import OpenAI
 from PIL import Image, ImageFilter
 
+from api_config import add_api_profile_args, apply_api_profile_defaults
 from stage2.generate_sam3_masks_from_agent import load_agent_seed
 from stage2.generate_sam3_masks_from_bbox import DEFAULT_CHECKPOINT, build_video_tracker, import_sam3_builders, propagate_object_masks, sorted_jpeg_frame_files
 from stage1.run_ark_video_qa import extract_answer, extract_json_block, image_to_data_url
@@ -56,9 +61,10 @@ def parse_args() -> argparse.Namespace:
         help="Directory to save highlighted sampled frames and per-object review JSONs",
     )
     parser.add_argument("--dataset-root", default="../../dataset/mevis/valid")
-    parser.add_argument("--base-url", default="https://ark.cn-beijing.volces.com/api/v3")
-    parser.add_argument("--model", default="doubao-seed-2-0-lite-260215")
-    parser.add_argument("--api-key", default=os.environ.get("VOLCES_API_KEY").strip(), help="API key for the review MLLM")
+    add_api_profile_args(parser)
+    parser.add_argument("--base-url", default=None, help="API base URL; defaults to selected API profile")
+    parser.add_argument("--model", default=None, help="Model name; defaults to selected API profile")
+    parser.add_argument("--api-key", default=None, help="API key; defaults to selected profile api_key_env")
     parser.add_argument(
         "--keywords",
         default="left,right,without,top,bottom",
@@ -73,7 +79,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--only-video-id", action="append")
     parser.add_argument("--only-json-id", action="append")
     parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.api_profile is None:
+        args.api_profile = "volces_review"
+    return apply_api_profile_defaults(args)
 
 
 def list_tasks(batch_root: Path, only_video_ids: set[str] | None, only_json_ids: set[str] | None) -> list[Path]:

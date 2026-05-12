@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from api_config import add_api_profile_args, apply_api_profile_defaults
 from stage1.run_ark_video_qa import (
-    DEFAULT_BASE_URL,
-    DEFAULT_MODEL,
     build_prompt_text,
     build_result_payload,
     call_api,
@@ -36,8 +40,10 @@ def parse_args() -> argparse.Namespace:
         default="../../dataset/mevis/valid",
         help="Dataset root containing JPEGImages/",
     )
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OpenAI-compatible API base URL")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Model name")
+    add_api_profile_args(parser)
+    parser.add_argument("--base-url", default=None, help="API base URL; defaults to selected API profile")
+    parser.add_argument("--model", default=None, help="Model name; defaults to selected API profile")
+    parser.add_argument("--api-key", default=None, help="API key; defaults to selected profile api_key_env")
     parser.add_argument(
         "--only-video-id",
         action="append",
@@ -49,7 +55,8 @@ def parse_args() -> argparse.Namespace:
         help="Optional filter; may be passed multiple times",
     )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing refined QA files")
-    return parser.parse_args()
+    args = parser.parse_args()
+    return apply_api_profile_defaults(args)
 
 
 def main() -> int:
@@ -91,7 +98,7 @@ def main() -> int:
             model=args.model,
         )
         try:
-            response = call_api(bundle.payload, args.base_url)
+            response = call_api(bundle.payload, args.base_url, args.api_key)
             answer = extract_answer(response)
             results = normalize_result_records(answer, bundle.selected_frames)
             result_payload = build_result_payload(

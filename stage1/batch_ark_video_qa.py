@@ -5,14 +5,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from api_config import add_api_profile_args, apply_api_profile_defaults
 from run_ark_video_qa import (
-    DEFAULT_BASE_URL,
-    DEFAULT_MODEL,
     build_prompt_text,
     build_result_payload,
     call_api,
@@ -32,24 +37,25 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--meta-json",
-        # default="../../dataset/mevis/valid/meta_expressions.json",
-        default="../../dataset/ref-youtube/meta_expressions/valid/valid_filtered.json",
+        default="../../dataset/mevis/valid/meta_expressions.json",
+        # default="../../dataset/ref-youtube/meta_expressions/valid/valid_filtered.json",
         help="Path to meta_expressions_text_release.json",
     )
     parser.add_argument(
         "--dataset-root",
-        # default="../../dataset/mevis/valid",
-        default="../../dataset/ref-youtube/valid",
+        default="../../dataset/mevis/valid",
+        # default="../../dataset/ref-youtube/valid",
         help="Dataset root directory containing JPEGImages/",
     )
     parser.add_argument(
         "--error-dir",
-        default="outputs/ref-youtube/batch_ark_video_qa/_errors",
+        # default="outputs/ref-youtube/batch_ark_video_qa2/_errors",
+        default="outputs/mevis/batch_ark_video_qa/_errors",
         help="Directory containing per-task error JSON files",
     )
     parser.add_argument(
         "--output-dir",
-        default="outputs/batch_ark_video_qa",
+        default="outputs/mevis/batch_ark_video_qa",
         help="Directory to store per-video per-event result JSON files",
     )
     parser.add_argument(
@@ -58,8 +64,10 @@ def parse_args() -> argparse.Namespace:
         default="json",
         help="json: request and save normalized JSON; text: keep raw model text",
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Ark model name")
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Ark API base URL")
+    add_api_profile_args(parser)
+    parser.add_argument("--model", default=None, help="Model name; defaults to selected API profile")
+    parser.add_argument("--base-url", default=None, help="API base URL; defaults to selected API profile")
+    parser.add_argument("--api-key", default=None, help="API key; defaults to selected profile api_key_env")
     parser.add_argument(
         "--parallel",
         type=int,
@@ -91,7 +99,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Only print planned work without calling the API",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    return apply_api_profile_defaults(args)
 
 
 def load_tasks(meta_json_path: Path, only_video_ids: set[str] | None = None) -> list[dict[str, Any]]:
@@ -183,7 +192,7 @@ def process_task(
         model=args.model,
     )
     try:
-        response = call_api(bundle.payload, args.base_url)
+        response = call_api(bundle.payload, args.base_url, args.api_key)
         answer = extract_answer(response)
 
         if args.response_format == "json":
@@ -212,6 +221,7 @@ def process_task(
             error_path.unlink()
         return ("success", video_id, expression_id, str(result_path))
     except Exception as exc:
+        cause = exc.__cause__ or exc.__context__
         error_payload = {
             "video_id": video_id,
             "expression_id": expression_id,
@@ -219,6 +229,13 @@ def process_task(
             "vid_id": task.get("vid_id"),
             "error": type(exc).__name__,
             "message": str(exc),
+            "repr": repr(exc),
+            "cause_error": type(cause).__name__ if cause else None,
+            "cause_message": str(cause) if cause else None,
+            "cause_repr": repr(cause) if cause else None,
+            "traceback": traceback.format_exc(),
+            "base_url": args.base_url,
+            "model": args.model,
         }
         save_json(error_payload, error_path)
         return ("error", video_id, expression_id, str(exc))

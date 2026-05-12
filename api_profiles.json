@@ -1,0 +1,30 @@
+{
+  "default_profile": "volces",
+  "profiles": {
+    "volces": {
+      "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "model": "doubao-seed-2.0-pro",
+      "api_key_env": "VOLCES_API_KEY"
+    },
+     "volces_test": {
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "model": "doubao-seed-1-6-lite-251015",
+    "api_key_env": "VOLCES_API_KEY"
+  },
+    "dashscope": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.5-plus-2026-02-15",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    },
+    "xunfei": {
+      "base_url": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+      "model": "astron-code-latest",
+      "api_key_env": "XUNFEI_API_KEY"
+    },
+    "xiaomi": {
+      "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+      "model": "mimo-v2.5-pro",
+      "api_key_env": "XIAOMI_API_KEY"
+    }
+  }
+}

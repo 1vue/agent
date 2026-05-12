@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Batch-run the official SAM3 agent on every JSON under outputs/batch_ark_video_qa."""
 
 from __future__ import annotations
@@ -14,9 +14,12 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from api_config import add_api_profile_args, apply_api_profile_defaults
 from run_sam3_agent_from_batch_result import (
-    DEFAULT_BASE_URL,
-    DEFAULT_MODEL,
     build_processor,
     import_agent_modules,
     load_result_json,
@@ -41,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         default="../../dataset/mevis/valid",
+        # default="../../dataset/ref-youtube/valid",
         help="Dataset root directory containing JPEGImages/<video>/",
     )
     parser.add_argument(
@@ -58,22 +62,21 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("SAM3_CHECKPOINT", "checkpoints/sam3.pt"),
         help="Local SAM3 checkpoint path",
     )
+    add_api_profile_args(parser)
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("SAM3_AGENT_BASE_URL", DEFAULT_BASE_URL),
-        help="OpenAI-compatible LLM base URL",
+        default=os.environ.get("SAM3_AGENT_BASE_URL"),
+        help="OpenAI-compatible LLM base URL; defaults to selected API profile",
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("SAM3_AGENT_MODEL", DEFAULT_MODEL),
-        help="LLM model name",
+        default=os.environ.get("SAM3_AGENT_MODEL"),
+        help="LLM model name; defaults to selected API profile",
     )
     parser.add_argument(
         "--api-key",
-        # default=os.environ.get("XIAOMI_API_KEY").strip(),
-        default=os.environ.get("VOLCES_API_KEY").strip(),
-        # default=os.environ.get("XUNFEI_API_KEY").strip(),
-        help="LLM API key; can also come from SAM3_AGENT_API_KEY",
+        default=os.environ.get("SAM3_AGENT_API_KEY"),
+        help="LLM API key; defaults to selected profile api_key_env",
     )
     parser.add_argument(
         "--extra-body-json",
@@ -120,6 +123,12 @@ def parse_args() -> argparse.Namespace:
         help="Enable SAM3 agent debug outputs",
     )
     parser.add_argument(
+        "--max-generations",
+        type=int,
+        default=10,
+        help="Maximum number of MLLM generation rounds allowed inside the SAM3 agent",
+    )
+    parser.add_argument(
         "--prompt-source",
         choices=("discriminative_description", "object_name", "target_event"),
         default="discriminative_description",
@@ -145,7 +154,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="If set, only tasks found in the error-dir will be processed",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    return apply_api_profile_defaults(args)
 
 # 保存错误任务
 def load_error_tasks(
@@ -225,6 +235,7 @@ def run_one_task(
     selected_indices: set[int] | None = None,
     prompt_source: str = "discriminative_description",
     debug: bool = False,
+    max_generations: int = 10,
     overwrite: bool = False,
     extra_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -301,7 +312,7 @@ def run_one_task(
             send_generate_request=send_generate_request,
             call_sam_service=call_sam_service,
             output_dir=str(item_dir),
-            max_generations=10,   #最大对话轮数
+            max_generations=max_generations,
             debug=debug,
         )
 
@@ -422,6 +433,7 @@ def worker_main(
                     call_sam_service=call_sam_service,
                     prompt_source=args.prompt_source,
                     debug=args.debug,
+                    max_generations=args.max_generations,
                     overwrite=args.overwrite,
                     extra_body=extra_body,
                 )
@@ -442,7 +454,7 @@ def worker_main(
                     "result_json_path": task["result_json_path"],
                     "error": type(exc).__name__,
                     "message": str(exc),
-                    "traceback": traceback.format_exc(),  # 建议把堆栈也存了，方便查错
+                    "traceback": traceback.format_exc(),
                 }
                 error_path.parent.mkdir(parents=True, exist_ok=True)
                 save_json(error_payload, error_path)
@@ -474,17 +486,15 @@ def worker_main(
 def main() -> int:
     args = parse_args()
     if not args.api_key and not args.dry_run:
-        raise ValueError("Missing API key; pass --api-key or set SAM3_AGENT_API_KEY")
+        raise ValueError("Missing API key; pass --api-key or set the selected profile api_key_env")
 
     batch_root = Path(args.batch_root)
     only_video_ids = set(args.only_video_id or [])
     only_json_ids = set(args.only_json_id or [])
     error_dir = Path(args.error_dir)
     if args.retry_errors_only:
-        # 只跑失败的
         tasks = load_error_tasks(error_dir, only_video_ids or None, only_json_ids or None)
     else:
-        # 跑全量（list_tasks 内部会自动根据 output 检查是否跳过已完成的）
         tasks = list_tasks(batch_root, only_video_ids or None, only_json_ids or None)
     if args.limit is not None:
         tasks = tasks[: args.limit]
