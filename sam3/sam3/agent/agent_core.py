@@ -53,6 +53,39 @@ def count_images(messages):
     return total
 
 
+def _append_tool_call_retry_message(
+    messages,
+    generated_text,
+    reason,
+    initial_text_prompt,
+):
+    """Ask the model to retry when it did not return a valid tool call."""
+    if isinstance(generated_text, str) and generated_text.strip():
+        messages.append(
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": generated_text}],
+            }
+        )
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"Your previous response could not be used because {reason}. "
+                        "You must respond with exactly one valid tool call wrapped in "
+                        "<tool>...</tool>. The content inside <tool> must be valid JSON. "
+                        "Do not include any explanation outside the tool call. "
+                        f"The original user query was '{initial_text_prompt}'."
+                    ),
+                }
+            ],
+        }
+    )
+
+
 def _prune_messages_for_next_round(
     messages_list,
     used_text_prompts,
@@ -199,13 +232,60 @@ def agent_inference(
     print("-" * 30 + f" Round {str(generation_count + 1)}" + "-" * 30)
     print("\n\n")
     generated_text = send_generate_request(messages)
+    generation_count += 1
     print(f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n")
-    while generated_text is not None:
+    while generated_text is not None or generation_count < max_generations:
         save_debug_messages(messages, debug, debug_folder_path, debug_jsonl_path)
-        assert (
-            "<tool>" in generated_text,
-            f"Generated text does not contain <tool> tag: {generated_text}",
-        )
+        if not isinstance(generated_text, str) or not generated_text.strip():
+            if generation_count >= max_generations:
+                raise ValueError(
+                    "MLLM returned an empty response and exceeded maximum "
+                    f"generation requests ({max_generations})"
+                )
+            _append_tool_call_retry_message(
+                messages,
+                generated_text,
+                "it was empty",
+                initial_text_prompt,
+            )
+            print(
+                "[warn] MLLM returned an empty response. Requesting a valid tool call again."
+            )
+            print("\n\n")
+            print("-" * 30 + f" Round {str(generation_count + 1)}" + "-" * 30)
+            print("\n\n")
+            generated_text = send_generate_request(messages)
+            generation_count += 1
+            print(
+                f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n"
+            )
+            continue
+        if "<tool>" not in generated_text or "</tool>" not in generated_text:
+            if generation_count >= max_generations:
+                raise ValueError(
+                    "MLLM response did not contain a complete <tool>...</tool> "
+                    f"call and exceeded maximum generation requests ({max_generations}): "
+                    f"{generated_text}"
+                )
+            _append_tool_call_retry_message(
+                messages,
+                generated_text,
+                "it did not contain a complete <tool>...</tool> block",
+                initial_text_prompt,
+            )
+            print(
+                "[warn] MLLM response did not contain a complete tool block. "
+                "Requesting a valid tool call again."
+            )
+            print("\n\n")
+            print("-" * 30 + f" Round {str(generation_count + 1)}" + "-" * 30)
+            print("\n\n")
+            generated_text = send_generate_request(messages)
+            generation_count += 1
+            print(
+                f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n"
+            )
+            continue
         generated_text = generated_text.split("</tool>", 1)[0] + "</tool>"
         tool_call_json_str = (
             generated_text.split("<tool>")[-1]
@@ -216,7 +296,27 @@ def agent_inference(
         try:
             tool_call = json.loads(tool_call_json_str)
         except json.JSONDecodeError:
-            raise ValueError(f"Invalid JSON in tool call: {tool_call_json_str}")
+            if generation_count >= max_generations:
+                raise ValueError(
+                    "Invalid JSON in tool call and exceeded maximum generation "
+                    f"requests ({max_generations}): {tool_call_json_str}"
+                )
+            _append_tool_call_retry_message(
+                messages,
+                generated_text,
+                f"the tool JSON was invalid: {tool_call_json_str}",
+                initial_text_prompt,
+            )
+            print("[warn] MLLM returned invalid tool JSON. Requesting a valid tool call again.")
+            print("\n\n")
+            print("-" * 30 + f" Round {str(generation_count + 1)}" + "-" * 30)
+            print("\n\n")
+            generated_text = send_generate_request(messages)
+            generation_count += 1
+            print(
+                f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n"
+            )
+            continue
 
         if PATH_TO_LATEST_OUTPUT_JSON == "":
             # The first tool call must be segment_phrase or report_no_mask
@@ -537,7 +637,6 @@ def agent_inference(
         )
         # make sure there can never be more than 2 images in the context
         assert count_images(messages) <= 2
-        generation_count += 1
         if generation_count >= max_generations:
             raise ValueError(
                 f"Exceeded maximum number of allowed generation requests ({max_generations})"
@@ -547,6 +646,7 @@ def agent_inference(
         print("-" * 30 + f" Round {str(generation_count + 1)}" + "-" * 30)
         print("\n\n")
         generated_text = send_generate_request(messages)
+        generation_count += 1
         print(
             f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n"
         )

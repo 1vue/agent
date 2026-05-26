@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,11 +20,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from api_config import add_api_profile_args, apply_api_profile_defaults
 from run_ark_video_qa import (
+    build_semantic_parse_payload,
     build_prompt_text,
     build_result_payload,
     call_api,
     extract_answer,
     normalize_result_records,
+    parse_semantic_answer,
     prepare_request,
     save_json,
 )
@@ -50,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--error-dir",
         # default="outputs/ref-youtube/batch_ark_video_qa2/_errors",
-        default="outputs/mevis/batch_ark_video_qa/_errors",
+        default="outputs/mevis/batch_video_qa/_errors",
         help="Directory containing per-task error JSON files",
     )
     parser.add_argument(
@@ -63,6 +67,12 @@ def parse_args() -> argparse.Namespace:
         choices=("json", "text"),
         default="json",
         help="json: request and save normalized JSON; text: keep raw model text",
+    )
+    parser.add_argument(
+        "--max-sampled-frames",
+        type=int,
+        default=10,
+        help="Maximum number of uniformly sampled frames to send to the VLM",
     )
     add_api_profile_args(parser)
     parser.add_argument("--model", default=None, help="Model name; defaults to selected API profile")
@@ -103,20 +113,77 @@ def parse_args() -> argparse.Namespace:
     return apply_api_profile_defaults(args)
 
 
+def _sort_key(value: Any) -> tuple[int, Any]:
+    try:
+        return (0, int(value))
+    except (TypeError, ValueError):
+        return (1, str(value))
+
+
+def _safe_id_part(value: Any) -> str:
+    text = str(value).strip()
+    text = re.sub(r"[^\w\-\.]+", "_", text, flags=re.UNICODE)
+    return text.strip("._") or "unknown"
+
+
+def _iter_expressions(expressions: Any) -> list[tuple[str, dict[str, Any]]]:
+    if isinstance(expressions, dict):
+        items = [(str(expression_id), expression_info) for expression_id, expression_info in expressions.items()]
+        return sorted(items, key=lambda item: _sort_key(item[0]))
+    elif isinstance(expressions, list):
+        items = []
+        seen_ids: dict[str, int] = {}
+        base_ids = [str(item.get("exp_id", index)) for index, item in enumerate(expressions)]
+        duplicated_base_ids = {base_id for base_id, count in Counter(base_ids).items() if count > 1}
+        for index, expression_info in enumerate(expressions):
+            if not isinstance(expression_info, dict):
+                raise ValueError(f"Expression at index {index} must be an object")
+            base_expression_id = str(expression_info.get("exp_id", index))
+            obj_id = expression_info.get("obj_id")
+            if base_expression_id in duplicated_base_ids and obj_id is not None:
+                base_output_id = f"{base_expression_id}_obj_{_safe_id_part(obj_id)}"
+            else:
+                base_output_id = base_expression_id
+            occurrence = seen_ids.get(base_output_id, 0)
+            seen_ids[base_output_id] = occurrence + 1
+            expression_id = (
+                base_output_id
+                if occurrence == 0
+                else f"{base_output_id}__{index}"
+            )
+            items.append((str(expression_id), expression_info))
+        return items
+    else:
+        raise ValueError("Expected expressions to be either a dict or a list")
+
+
+def _extract_expression_text(expression_info: dict[str, Any], expression_id: str) -> str:
+    for key in ("exp", "exp_text", "expression", "sentence", "text"):
+        value = expression_info.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    raise ValueError(f"Expression {expression_id} is missing exp/exp_text text")
+
+
 def load_tasks(meta_json_path: Path, only_video_ids: set[str] | None = None) -> list[dict[str, Any]]:
-    meta = json.loads(meta_json_path.read_text())
+    meta = json.loads(meta_json_path.read_text(encoding="utf-8"))
     tasks: list[dict[str, Any]] = []
     for video_id, video_info in meta["videos"].items():
         if only_video_ids and video_id not in only_video_ids:
             continue
         expressions = video_info["expressions"]
-        for expression_id, expression_info in sorted(expressions.items(), key=lambda item: int(item[0])):
+        for expression_id, expression_info in _iter_expressions(expressions):
             tasks.append(
                 {
                     "video_id": video_id,
                     "expression_id": str(expression_id),
-                    "target_event": expression_info["exp"],
+                    "raw_exp_id": expression_info.get("exp_id", expression_id),
+                    "target_event": _extract_expression_text(expression_info, expression_id),
                     "vid_id": video_info.get("vid_id"),
+                    "source": video_info.get("source"),
+                    "obj_id": expression_info.get("obj_id"),
+                    "is_sent": expression_info.get("is_sent"),
+                    "frame_ids": video_info.get("frames"),
                 }
             )
     return tasks
@@ -135,8 +202,13 @@ def load_error_tasks(error_dir: Path, only_video_ids: set[str] | None = None) ->
             {
                 "video_id": video_id,
                 "expression_id": str(error_info["expression_id"]),
+                "raw_exp_id": error_info.get("raw_exp_id"),
                 "target_event": error_info["target_event"],
                 "vid_id": error_info.get("vid_id"),
+                "source": error_info.get("source"),
+                "obj_id": error_info.get("obj_id"),
+                "is_sent": error_info.get("is_sent"),
+                "frame_ids": error_info.get("frame_ids"),
                 "error_path": error_path,
             }
         )
@@ -181,28 +253,45 @@ def process_task(
             error_path.unlink()
         return ("skip", video_id, expression_id, str(result_path))
 
-    prompt_text = build_prompt_text(
-        target_event=target_event,
-        response_format=args.response_format,
-    )
-    bundle = prepare_request(
-        video_id=video_id,
-        dataset_root=args.dataset_root,
-        prompt_text=prompt_text,
-        model=args.model,
-    )
+    semantic_parse: dict[str, Any] | None = None
+    raw_semantic_answer: str | None = None
+    answer: str | None = None
+    response: Any | None = None
     try:
+        semantic_response = call_api(
+            build_semantic_parse_payload(target_event=target_event, model=args.model),
+            args.base_url,
+            args.api_key,
+        )
+        raw_semantic_answer = extract_answer(semantic_response)
+        semantic_parse = parse_semantic_answer(raw_semantic_answer, target_event)
+
+        prompt_text = build_prompt_text(
+            target_event=target_event,
+            semantic_parse=semantic_parse,
+            response_format=args.response_format,
+        )
+        bundle = prepare_request(
+            video_id=video_id,
+            dataset_root=args.dataset_root,
+            prompt_text=prompt_text,
+            model=args.model,
+            frame_ids=task.get("frame_ids"),
+            max_sampled_frames=args.max_sampled_frames,
+        )
         response = call_api(bundle.payload, args.base_url, args.api_key)
         answer = extract_answer(response)
 
         if args.response_format == "json":
-            results = normalize_result_records(answer, bundle.selected_frames)
+            results = normalize_result_records(answer, bundle.selected_frames, semantic_parse)
             result_payload = build_result_payload(
                 video_id=video_id,
                 prompt_label="target_event",
                 prompt_value=target_event,
                 bundle=bundle,
+                semantic_parse=semantic_parse,
                 results=results,
+                raw_semantic_response_text=raw_semantic_answer,
                 raw_response_text=answer,
             )
         else:
@@ -211,11 +300,17 @@ def process_task(
                 prompt_label="target_event",
                 prompt_value=target_event,
                 bundle=bundle,
+                semantic_parse=semantic_parse,
+                raw_semantic_response_text=raw_semantic_answer,
                 raw_response_text=answer,
             )
 
         result_payload["expression_id"] = expression_id
+        result_payload["raw_exp_id"] = task.get("raw_exp_id")
         result_payload["vid_id"] = task["vid_id"]
+        result_payload["source"] = task.get("source")
+        result_payload["obj_id"] = task.get("obj_id")
+        result_payload["is_sent"] = task.get("is_sent")
         save_json(result_payload, result_path)
         if error_path.exists():
             error_path.unlink()
@@ -225,8 +320,13 @@ def process_task(
         error_payload = {
             "video_id": video_id,
             "expression_id": expression_id,
+            "raw_exp_id": task.get("raw_exp_id"),
             "target_event": target_event,
             "vid_id": task.get("vid_id"),
+            "source": task.get("source"),
+            "obj_id": task.get("obj_id"),
+            "is_sent": task.get("is_sent"),
+            "frame_ids": task.get("frame_ids"),
             "error": type(exc).__name__,
             "message": str(exc),
             "repr": repr(exc),
@@ -237,6 +337,28 @@ def process_task(
             "base_url": args.base_url,
             "model": args.model,
         }
+        if answer is not None:
+            error_payload["raw_response_text"] = answer
+        if raw_semantic_answer is not None:
+            error_payload["raw_semantic_response_text"] = raw_semantic_answer
+        if semantic_parse is not None:
+            error_payload["semantic_parse"] = semantic_parse
+        if response is not None:
+            try:
+                error_payload["raw_api_response"] = response.model_dump(mode="json")
+            except Exception:
+                error_payload["raw_api_response_repr"] = repr(response)
+            try:
+                choice = response.choices[0]
+                message = choice.message
+                error_payload["response_debug"] = {
+                    "finish_reason": getattr(choice, "finish_reason", None),
+                    "message_content": getattr(message, "content", None),
+                    "message_refusal": getattr(message, "refusal", None),
+                    "message_tool_calls": getattr(message, "tool_calls", None),
+                }
+            except Exception:
+                pass
         save_json(error_payload, error_path)
         return ("error", video_id, expression_id, str(exc))
 

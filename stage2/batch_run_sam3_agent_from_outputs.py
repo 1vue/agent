@@ -23,6 +23,7 @@ from run_sam3_agent_from_batch_result import (
     build_processor,
     import_agent_modules,
     load_result_json,
+    resolve_agent_prompt,
     safe_name,
     select_result_items,
     save_json
@@ -130,9 +131,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prompt-source",
-        choices=("discriminative_description", "object_name", "target_event"),
-        default="discriminative_description",
+        choices=("discriminative_description", "object_name", "target_event", "role_aware"),
+        default="role_aware",
         help="Which text source to use as the SAM3 agent prompt",
+    )
+    parser.add_argument(
+        "--single-object-prompt-hint",
+        action="store_true",
+        help=(
+            "Append a light prompt hint that multiple part masks of the same physical "
+            "target should be selected together"
+        ),
     )
     parser.add_argument(
         "--overwrite",
@@ -191,6 +200,19 @@ def load_error_tasks(
 
     return tasks
 
+
+def clear_error_path(error_path: Path) -> None:
+    if not error_path.exists():
+        return
+    error_parent = error_path.parent
+    error_path.unlink()
+    try:
+        if error_parent.exists() and not any(error_parent.iterdir()):
+            error_parent.rmdir()
+    except OSError:
+        pass
+
+
 def list_tasks(
     batch_root: Path,
     only_video_ids: set[str] | None,
@@ -233,9 +255,10 @@ def run_one_task(
     send_generate_request,
     call_sam_service,
     selected_indices: set[int] | None = None,
-    prompt_source: str = "discriminative_description",
+    prompt_source: str = "role_aware",
     debug: bool = False,
     max_generations: int = 10,
+    single_object_prompt_hint: bool = False,
     overwrite: bool = False,
     extra_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -273,12 +296,12 @@ def run_one_task(
 
     for obj_idx, item in selected_items:
         object_name = item.get("object_name") or f"object_{obj_idx}"
-        if prompt_source == "object_name":
-            prompt = item.get("object_name")
-        elif prompt_source == "target_event":
-            prompt = result_json.get("target_event")
-        else:
-            prompt = item.get("discriminative_description")
+        prompt = resolve_agent_prompt(
+            item,
+            prompt_source=prompt_source,
+            target_event=result_json.get("target_event"),
+            single_object_prompt_hint=single_object_prompt_hint,
+        )
         if not prompt:
             raise ValueError(f"Missing prompt text for object index {obj_idx} in {task['result_json_path']}")
 
@@ -324,6 +347,17 @@ def run_one_task(
             "object_name": object_name,
             "input_prompt": prompt,
             "source_result_item": item,
+            "role_info": {
+                "target_role": item.get("target_role"),
+                "target_entity": item.get("target_entity"),
+                "action": item.get("action"),
+                "segment_target": item.get("segment_target"),
+                "target_cardinality": item.get("target_cardinality"),
+                "target_set_description": item.get("target_set_description"),
+                "requires_instance_enumeration": item.get("requires_instance_enumeration"),
+                "reference_entities": item.get("reference_entities", []),
+                "excluded_entities": item.get("excluded_entities", []),
+            },
         }
         pred_json_path.write_text(json.dumps(final_output_dict, indent=2, ensure_ascii=False))
         (item_dir / "history.json").write_text(json.dumps(agent_history, indent=2, ensure_ascii=False))
@@ -336,10 +370,12 @@ def run_one_task(
                     "object_index": obj_idx,
                     "object_name": object_name,
                     "image_path": str(image_path),
+                    "inference_image_path": str(image_path),
                     "frame_filename": frame_filename,
                     "actual_frame_index": item.get("actual_frame_index"),
                     "prompt": prompt,
                     "target_event": result_json.get("target_event"),
+                    "role_info": final_output_dict["role_info"],
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -351,6 +387,7 @@ def run_one_task(
                 "object_name": object_name,
                 "prompt": prompt,
                 "image_path": str(image_path),
+                "inference_image_path": str(image_path),
                 "output_dir": str(item_dir),
                 "num_masks": len(final_output_dict.get("pred_masks", [])),
                 "status": "completed",
@@ -434,11 +471,11 @@ def worker_main(
                     prompt_source=args.prompt_source,
                     debug=args.debug,
                     max_generations=args.max_generations,
+                    single_object_prompt_hint=args.single_object_prompt_hint,
                     overwrite=args.overwrite,
                     extra_body=extra_body,
                 )
-                if error_path.exists():
-                    error_path.unlink()
+                clear_error_path(error_path)
                 progress_queue.put(
                     {
                         "type": "success",

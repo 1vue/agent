@@ -7,6 +7,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+import re
 from threading import Thread
 
 import numpy as np
@@ -171,7 +172,12 @@ def load_video_frames_from_jpg_images(
         for p in os.listdir(jpg_folder)
         if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
     ]
-    frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+    def _natural_frame_sort_key(path):
+        stem = os.path.splitext(path)[0]
+        parts = re.split(r"(\d+)", stem)
+        return [int(part) if part.isdigit() else part for part in parts]
+
+    frame_names.sort(key=_natural_frame_sort_key)
     num_frames = len(frame_names)
     if num_frames == 0:
         raise RuntimeError(f"no images found in {jpg_folder}")

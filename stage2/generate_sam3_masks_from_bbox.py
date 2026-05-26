@@ -91,10 +91,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def numeric_sort_key(stem: str):
-    try:
-        return (0, int(stem))
-    except ValueError:
-        return (1, stem)
+    parts = re.split(r"(\d+)", stem)
+    key = [int(part) if part.isdigit() else part for part in parts]
+    return (0, key)
 
 
 def sorted_jpeg_frame_files(video_dir: Path) -> list[str]:

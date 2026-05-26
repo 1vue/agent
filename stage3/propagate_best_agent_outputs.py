@@ -64,9 +64,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_bad_group_set(path: Path) -> set[tuple[str, str]]:
+def load_bad_group_set(path: Path, *, allow_high_iou_only: bool = False) -> set[tuple[str, str]]:
     data = json.loads(path.read_text())
-    return {(item["video_id"], str(item["json_id"])) for item in data.get("group_badcases", [])}
+    bad_groups = set()
+    for item in data.get("group_badcases", []):
+        reasons = set(item.get("reasons", []))
+        if allow_high_iou_only and reasons and reasons.issubset({"high_iou"}):
+            continue
+        bad_groups.add((item["video_id"], str(item["json_id"])))
+    return bad_groups
 
 
 def load_terminal_empty_group_set(path: Path) -> set[tuple[str, str]]:
@@ -231,41 +237,45 @@ def main() -> int:
     initial_bad = load_bad_group_set(Path(args.initial_scan_json))
     initial_terminal_empty = load_terminal_empty_group_set(Path(args.initial_scan_json))
     refine1_bad = load_bad_group_set(Path(args.refine1_scan_json))
-    fallback_bad = load_bad_group_set(Path(args.fallback_scan_json))
+    refine1_terminal_empty = load_terminal_empty_group_set(Path(args.refine1_scan_json))
+    fallback_bad = load_bad_group_set(Path(args.fallback_scan_json), allow_high_iou_only=True)
+    fallback_terminal_empty = load_terminal_empty_group_set(Path(args.fallback_scan_json))
 
     selected_groups: list[dict[str, Any]] = []
     last_list: list[dict[str, str]] = []
     terminal_empty_groups: list[dict[str, str]] = []
+    stage_candidates = [
+        ("initial", Path(args.initial_agent_root), initial_bad, initial_terminal_empty),
+        ("refine1", Path(args.refine1_agent_root), refine1_bad, refine1_terminal_empty),
+        ("fallback", Path(args.fallback_agent_root), fallback_bad, fallback_terminal_empty),
+    ]
     for video_id, json_id in base_groups:
         key = (video_id, json_id)
-        if key in initial_terminal_empty:
-            terminal_empty_groups.append({"video_id": video_id, "json_id": json_id})
-            continue
-        if key not in initial_bad:
-            root = Path(args.initial_agent_root)
-            stage = "initial"
-        elif key not in refine1_bad:
-            root = Path(args.refine1_agent_root)
-            stage = "refine1"
-        elif key not in fallback_bad:
-            root = Path(args.fallback_agent_root)
-            stage = "fallback"
-        else:
-            last_list.append({"video_id": video_id, "json_id": json_id})
-            continue
-
-        pred_paths = pred_paths_for_group(root, video_id, json_id)
-        if not pred_paths:
-            last_list.append({"video_id": video_id, "json_id": json_id})
-            continue
-        selected_groups.append(
-            {
+        saw_terminal_empty = False
+        selected: dict[str, Any] | None = None
+        for stage, root, bad_set, terminal_empty_set in stage_candidates:
+            if key in terminal_empty_set:
+                saw_terminal_empty = True
+                continue
+            if key in bad_set:
+                continue
+            pred_paths = pred_paths_for_group(root, video_id, json_id)
+            if not pred_paths:
+                continue
+            selected = {
                 "video_id": video_id,
                 "json_id": json_id,
                 "pred_paths": [str(p) for p in pred_paths],
                 "selected_stage": stage,
             }
-        )
+            break
+
+        if selected is not None:
+            selected_groups.append(selected)
+        elif saw_terminal_empty:
+            terminal_empty_groups.append({"video_id": video_id, "json_id": json_id})
+        else:
+            last_list.append({"video_id": video_id, "json_id": json_id})
     
 
     output_root = Path(args.mask_root) / args.exp_name

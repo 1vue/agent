@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="fe493823-a4af-4871-a13b-7b00f01aae35" name="bitahub">
+        <fileTransfer accessType="SFTP" host="xj-member.bitahub.com" port="42188" sshConfigId="32c47ddb-b071-4c38-b582-d7bae3d3578c" sshConfig="root@xj-member.bitahub.com:42188 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

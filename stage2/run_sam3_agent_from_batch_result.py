@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import traceback
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -100,9 +101,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prompt-source",
-        choices=("discriminative_description", "object_name", "target_event"),
-        default="discriminative_description",
+        choices=("discriminative_description", "object_name", "target_event", "role_aware"),
+        default="role_aware",
         help="Which text source to use as the SAM3 agent prompt",
+    )
+    parser.add_argument(
+        "--single-object-prompt-hint",
+        action="store_true",
+        help=(
+            "Append a light prompt hint that multiple part masks of the same physical "
+            "target should be selected together"
+        ),
     )
     parser.add_argument(
         "--use-object-name",
@@ -200,6 +209,85 @@ def select_result_items(
     return selected
 
 
+def _join_text_list(values: Any) -> str:
+    if not isinstance(values, list):
+        return ""
+    return "; ".join(str(value).strip() for value in values if str(value).strip())
+
+
+def build_role_aware_prompt(item: dict[str, Any], target_event: str | None = None) -> str:
+    description = str(item.get("discriminative_description") or item.get("object_name") or "").strip()
+    object_name = str(item.get("object_name") or "").strip()
+    target_entity = str(item.get("target_entity") or object_name or "target object").strip()
+    target_role = str(item.get("target_role") or "unknown").strip()
+    action = str(item.get("action") or "unknown").strip()
+    segment_target = str(item.get("segment_target") or target_event or description or object_name).strip()
+    requires_instance_enumeration = bool(item.get("requires_instance_enumeration"))
+    instance_target = description or segment_target or object_name or target_entity
+    reference_entities = _join_text_list(item.get("reference_entities"))
+    excluded_entities = _join_text_list(item.get("excluded_entities"))
+
+    lines = [
+        instance_target,
+        "",
+        "Segmentation target constraints:",
+        f"- Segment exactly one physical target instance: {instance_target}.",
+        f"- Output object name: {object_name or target_entity}.",
+        f"- Target category: {target_entity}.",
+        f"- Target role in the expression: {target_role}.",
+        f"- Matched action/relation: {action}.",
+    ]
+    if target_event:
+        lines.append(f"- Original referring expression, used only as context: {target_event}.")
+    if segment_target and segment_target != instance_target:
+        lines.append(f"- Instance-level parsed target for this item: {segment_target}.")
+    if requires_instance_enumeration:
+        lines.append(
+            "- This result came from a multi-target expression, but this SAM3 run is for only the single instance described above. Do NOT segment the whole group or nearby same-class instances."
+        )
+    if reference_entities:
+        lines.append(f"- Reference entities used only for identification: {reference_entities}.")
+    if excluded_entities:
+        lines.append(f"- Do NOT segment these excluded entities: {excluded_entities}.")
+    if target_role == "patient":
+        lines.append("- The active agent is not the target; reject masks belonging to the actor/causer.")
+    elif target_role == "agent":
+        lines.append("- The patient or object being acted upon is not the target unless explicitly included in the parsed target.")
+    lines.extend(
+        [
+            "- Choose masks belonging to this parsed target only.",
+            "- Select exactly this one physical instance for this output, not the full set from the original expression.",
+            "- If a candidate mask matches an excluded entity or only a reference entity, reject it.",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
+def resolve_agent_prompt(
+    item: dict[str, Any],
+    *,
+    prompt_source: str,
+    target_event: str | None,
+    single_object_prompt_hint: bool = False,
+) -> str | None:
+    if prompt_source == "object_name":
+        prompt = item.get("object_name")
+    elif prompt_source == "target_event":
+        prompt = target_event
+    elif prompt_source == "role_aware":
+        prompt = build_role_aware_prompt(item, target_event)
+    else:
+        prompt = item.get("discriminative_description")
+
+    if prompt and single_object_prompt_hint:
+        target_entity = str(item.get("target_entity") or item.get("object_name") or "target object").strip()
+        prompt = (
+            f"{prompt}\n- If multiple available masks cover different visible parts of the same "
+            f"physical {target_entity}, select those parts together."
+        )
+    return prompt
+
+
 def main() -> int:
     args = parse_args()
     if not args.api_key:
@@ -260,12 +348,12 @@ def main() -> int:
 
     for obj_idx, item in selected_items:
         object_name = item.get("object_name") or f"object_{obj_idx}"
-        if prompt_source == "object_name":
-            prompt = item.get("object_name")
-        elif prompt_source == "target_event":
-            prompt = result_json.get("target_event")
-        else:
-            prompt = item.get("discriminative_description")
+        prompt = resolve_agent_prompt(
+            item,
+            prompt_source=prompt_source,
+            target_event=result_json.get("target_event"),
+            single_object_prompt_hint=args.single_object_prompt_hint,
+        )
         if not prompt:
             raise ValueError(f"Missing prompt text for object index {obj_idx}")
 
@@ -298,15 +386,31 @@ def main() -> int:
         print(f"      image: {image_path}")
         print(f"      prompt: {prompt}")
 
-        agent_history, final_output_dict, rendered_final_output = agent_inference(
-            str(image_path),
-            prompt,
-            send_generate_request=send_generate_request,
-            call_sam_service=call_sam_service,
-            output_dir=str(item_dir),
-            max_generations=args.max_generations,
-            debug=args.debug,
-        )
+        try:
+            agent_history, final_output_dict, rendered_final_output = agent_inference(
+                str(image_path),
+                prompt,
+                send_generate_request=send_generate_request,
+                call_sam_service=call_sam_service,
+                output_dir=str(item_dir),
+                max_generations=args.max_generations,
+                debug=args.debug,
+            )
+        except Exception as exc:
+            error_payload = {
+                "video_id": args.video_id,
+                "json_id": str(args.json_id),
+                "object_index": obj_idx,
+                "object_name": object_name,
+                "image_path": str(image_path),
+                "frame_filename": frame_filename,
+                "prompt": prompt,
+                "error": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+            save_json(error_payload, item_dir / "error.json")
+            raise
 
         final_output_dict = {
             **final_output_dict,
@@ -316,6 +420,17 @@ def main() -> int:
             "object_name": object_name,
             "input_prompt": prompt,
             "source_result_item": item,
+            "role_info": {
+                "target_role": item.get("target_role"),
+                "target_entity": item.get("target_entity"),
+                "action": item.get("action"),
+                "segment_target": item.get("segment_target"),
+                "target_cardinality": item.get("target_cardinality"),
+                "target_set_description": item.get("target_set_description"),
+                "requires_instance_enumeration": item.get("requires_instance_enumeration"),
+                "reference_entities": item.get("reference_entities", []),
+                "excluded_entities": item.get("excluded_entities", []),
+            },
         }
 
         with open(pred_json_path, "w") as f:
@@ -331,10 +446,12 @@ def main() -> int:
                     "object_index": obj_idx,
                     "object_name": object_name,
                     "image_path": str(image_path),
+                    "inference_image_path": str(image_path),
                     "frame_filename": frame_filename,
                     "actual_frame_index": item.get("actual_frame_index"),
                     "prompt": prompt,
                     "target_event": result_json.get("target_event"),
+                    "role_info": final_output_dict["role_info"],
                 },
                 f,
                 indent=2,
@@ -347,6 +464,7 @@ def main() -> int:
                 "object_name": object_name,
                 "prompt": prompt,
                 "image_path": str(image_path),
+                "inference_image_path": str(image_path),
                 "output_dir": str(item_dir),
                 "num_masks": len(final_output_dict.get("pred_masks", [])),
                 "status": "completed",

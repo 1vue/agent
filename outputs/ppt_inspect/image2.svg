@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" contentScriptType="text/ecmascript" zoomAndPan="magnify" contentStyleType="text/css" style="stroke-opacity: 1.0;" version="1.0" width="48" fill="none" preserveAspectRatio="xMidYMid meet" viewBox="0 0 48 48" height="48" opacity="1.0">
+<circle stroke-linecap="round" stroke-linejoin="round" r="20" cx="24" cy="24" stroke="#930000" stroke-width="2.0"/>
+<path fill="#930000" clip-rule="evenodd" fill-opacity="1.0" d="M24 37V44V37Z" fill-rule="evenodd"/>
+<path d="M24 37V44" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#930000"/>
+<path fill="#930000" clip-rule="evenodd" fill-opacity="1.0" d="M36 24H44H36Z" fill-rule="evenodd"/>
+<path d="M36 24H44" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#930000"/>
+<path fill="#930000" clip-rule="evenodd" fill-opacity="1.0" d="M4 24H11H4Z" fill-rule="evenodd"/>
+<path d="M4 24H11" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#930000"/>
+<path fill="#930000" clip-rule="evenodd" fill-opacity="1.0" d="M24 11V4V11Z" fill-rule="evenodd"/>
+<path d="M24 11V4" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#930000"/>
+</svg>
