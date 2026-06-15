@@ -19,6 +19,7 @@ from stage2.generate_sam3_masks_from_bbox import (
     build_video_tracker,
     import_sam3_builders,
     propagate_object_masks,
+    resolve_video_dir,
     save_binary_mask,
     sorted_jpeg_frame_files,
 )
@@ -116,8 +117,10 @@ def list_agent_groups(
         parts = pred_path.relative_to(agent_root).parts
         if len(parts) < 4:
             continue
-        video_id = parts[-4]
+        video_id = "/".join(parts[:-3])
         json_id = parts[-3]
+        if not video_id:
+            continue
         if only_video_ids and video_id not in only_video_ids:
             continue
         if only_json_ids and json_id not in only_json_ids:
@@ -180,7 +183,7 @@ def process_group(
 ) -> dict[str, Any]:
     video_id = group["video_id"]
     json_id = group["json_id"]
-    video_dir = dataset_root / "JPEGImages" / video_id
+    video_dir = resolve_video_dir(dataset_root, video_id)
     frame_files = sorted_jpeg_frame_files(video_dir)
     frame_name_to_index = {name: idx for idx, name in enumerate(frame_files)}
     if not frame_files:

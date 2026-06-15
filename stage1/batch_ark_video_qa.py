@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
         "--dataset-root",
         default="../../dataset/mevis/valid",
         # default="../../dataset/ref-youtube/valid",
-        help="Dataset root directory containing JPEGImages/",
+        help="Dataset root directory containing either JPEGImages/<video_id>/ or <video_id>/",
     )
     parser.add_argument(
         "--error-dir",
@@ -193,7 +193,7 @@ def load_error_tasks(error_dir: Path, only_video_ids: set[str] | None = None) ->
     tasks: list[dict[str, Any]] = []
     if not error_dir.exists():
         return tasks
-    for error_path in sorted(error_dir.glob("*.json")):
+    for error_path in sorted(error_dir.rglob("*.json")):
         error_info = json.loads(error_path.read_text())
         video_id = error_info["video_id"]
         if only_video_ids and video_id not in only_video_ids:

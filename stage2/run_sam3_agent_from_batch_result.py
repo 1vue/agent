@@ -26,6 +26,7 @@ DEFAULT_DATASET_ROOT = "../../dataset/mevis/valid"
 DEFAULT_OUTPUT_ROOT = "agent_output"
 DEFAULT_SAM3_OFFICIAL_ROOT = "sam3"
 DEFAULT_CHECKPOINT = os.environ.get("SAM3_CHECKPOINT", "checkpoints/sam3.pt")
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -171,11 +172,43 @@ def load_result_json(batch_root: Path, video_id: str, json_id: str) -> dict[str,
     json_path = batch_root / video_id / f"{json_id}.json"
     if not json_path.exists():
         raise FileNotFoundError(f"Result JSON not found: {json_path}")
+    return load_result_json_path(json_path)
+
+
+def load_result_json_path(json_path: Path) -> dict[str, Any]:
     with open(json_path, "r") as f:
         data = json.load(f)
     if "results" not in data or not isinstance(data["results"], list):
         raise ValueError(f"Invalid result JSON format: {json_path}")
     return data
+
+
+def resolve_video_dir(dataset_root: Path, video_id: str) -> Path:
+    candidates = [
+        dataset_root / "JPEGImages" / video_id,
+        dataset_root / video_id,
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    raise FileNotFoundError(
+        f"Video id {video_id!r} not found. Tried: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
+def resolve_frame_path(dataset_root: Path, video_id: str, frame_filename: str) -> Path:
+    video_dir = resolve_video_dir(dataset_root, video_id)
+    frame_path = video_dir / frame_filename
+    if frame_path.exists():
+        return frame_path
+
+    stem = frame_path.stem if frame_path.suffix else frame_filename
+    for suffix in IMAGE_SUFFIXES:
+        candidate = video_dir / f"{stem}{suffix}"
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Image frame not found: {frame_path}")
 
 
 def build_processor(
@@ -361,9 +394,7 @@ def main() -> int:
         if not frame_filename:
             raise ValueError(f"Missing actual_frame_filename for object index {obj_idx}")
 
-        image_path = dataset_root / "JPEGImages" / args.video_id / frame_filename
-        if not image_path.exists():
-            raise FileNotFoundError(f"Image frame not found: {image_path}")
+        image_path = resolve_frame_path(dataset_root, args.video_id, frame_filename)
 
         item_dir = run_root / f"{safe_name(object_name)}_obj_{obj_idx}"
         pred_json_path = item_dir / "pred.json"

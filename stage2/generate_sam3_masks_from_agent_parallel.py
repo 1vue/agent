@@ -81,8 +81,10 @@ def list_agent_groups(
         parts = pred_path.relative_to(agent_root).parts
         if len(parts) < 4:
             continue
-        video_id = parts[-4]
+        video_id = "/".join(parts[:-3])
         json_id = parts[-3]
+        if not video_id:
+            continue
         if only_video_ids and video_id not in only_video_ids:
             continue
         if only_json_ids and json_id not in only_json_ids:

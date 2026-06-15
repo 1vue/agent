@@ -50,7 +50,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Rerun QA with a refinement prompt for groups listed in a badcase scan JSON.",
     )
-    parser.add_argument("--scan-json", required=True, help="Path to badcase scan JSON")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--scan-json", help="Path to badcase scan JSON")
+    input_group.add_argument(
+        "--manifest-json",
+        help=(
+            "Path to a route_badcase_repairs.py manifest JSON. "
+            "Use repair_manifests/reselect.json to rerun only routed reselect tasks."
+        ),
+    )
     parser.add_argument(
         "--output-root",
         default="outputs/batch_ark_video_qa_refine1",
@@ -119,6 +127,18 @@ def collect_groups(scan: dict[str, Any], include_terminal_empty: bool) -> list[d
             item.setdefault("reasons", ["terminal_empty"])
             item.setdefault("rerun_source", "terminal_empty")
             groups.append(item)
+    return groups
+
+
+def collect_manifest_groups(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for task in manifest.get("tasks", []):
+        item = dict(task)
+        item.setdefault("reasons", [item.get("failure_type") or manifest.get("manifest_type")])
+        item.setdefault("rerun_source", "repair_manifest")
+        item.setdefault("manifest_type", manifest.get("manifest_type"))
+        item.setdefault("repair_route", manifest.get("repair_route"))
+        groups.append(item)
     return groups
 
 
@@ -289,6 +309,9 @@ def process_group(group: dict[str, Any], args: argparse.Namespace, output_root: 
         result_payload["refined_from"] = str(source_path)
         result_payload["rerun_reason_reasons"] = group.get("reasons", [])
         result_payload["rerun_source"] = group.get("rerun_source")
+        result_payload["repair_manifest_type"] = group.get("manifest_type")
+        result_payload["repair_failure_type"] = group.get("failure_type")
+        result_payload["repair_route"] = group.get("repair_route")
         result_payload["force_non_empty_results"] = not args.allow_empty_results
         result_payload["non_empty_fallback_used"] = fallback_used
         if retry_answer is not None:
@@ -306,12 +329,16 @@ def process_group(group: dict[str, Any], args: argparse.Namespace, output_root: 
 
 def main() -> int:
     args = parse_args()
-    scan = json.loads(Path(args.scan_json).read_text())
+    input_path = Path(args.manifest_json or args.scan_json)
+    source = json.loads(input_path.read_text())
     only_video_ids = set(args.only_video_id or [])
     only_json_ids = set(args.only_json_id or [])
     output_root = Path(args.output_root)
 
-    groups = collect_groups(scan, args.include_terminal_empty)
+    if args.manifest_json:
+        groups = collect_manifest_groups(source)
+    else:
+        groups = collect_groups(source, args.include_terminal_empty)
     selected_groups = select_groups(groups, only_video_ids, only_json_ids)
     success_count = 0
     skip_count = 0

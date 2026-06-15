@@ -2,8 +2,22 @@
 <project version="4">
   <component name="WebServers">
     <option name="servers">
-      <webServer id="fe493823-a4af-4871-a13b-7b00f01aae35" name="bitahub">
-        <fileTransfer accessType="SFTP" host="xj-member.bitahub.com" port="42188" sshConfigId="32c47ddb-b071-4c38-b582-d7bae3d3578c" sshConfig="root@xj-member.bitahub.com:42188 password">
+      <webServer id="fe493823-a4af-4871-a13b-7b00f01aae35" name="bitahub-cs">
+        <fileTransfer accessType="SFTP" host="wlwl-member.bitahub.com" port="42003" sshConfigId="c7ddafbb-d8ea-443a-84db-8c0781ea341c" sshConfig="bitahub-cs">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="14ddf446-9512-4ce1-b1d9-ee5938a6d5bc" name="bitahub-xj">
+        <fileTransfer accessType="SFTP" host="wlwl-member.bitahub.com" port="42003" sshConfigId="c7ddafbb-d8ea-443a-84db-8c0781ea341c" sshConfig="bitahub-cs">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="c588291d-13ac-4c77-a861-17c00519458b" name="v100">
+        <fileTransfer rootFolder="/sdd/hw" accessType="SFTP" host="112.86.129.72" port="58022" sshConfigId="7ab2c415-cd39-411a-ac70-5d74b8c681d2" sshConfig="su06@112.86.129.72:58022 password">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
           </advancedOptions>

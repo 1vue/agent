@@ -23,6 +23,7 @@ from stage2.run_sam3_agent_from_batch_result import (  # noqa: E402
     DEFAULT_CHECKPOINT,
     build_processor,
     import_agent_modules,
+    resolve_frame_path,
     safe_name,
 )
 
@@ -83,9 +84,14 @@ def load_stage1_tasks(
     only_json_ids: set[str] | None,
 ) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
-    for json_path in sorted(batch_root.glob("*/*.json")):
-        video_id = json_path.parent.name
+    for json_path in sorted(batch_root.rglob("*.json")):
+        relative_path = json_path.relative_to(batch_root)
+        if "_errors" in relative_path.parts or json_path.name.startswith("_"):
+            continue
+        video_id = relative_path.parent.as_posix()
         json_id = json_path.stem
+        if not video_id or video_id == ".":
+            continue
         if only_video_ids and video_id not in only_video_ids:
             continue
         if only_json_ids and json_id not in only_json_ids:
@@ -720,9 +726,7 @@ def process_task(
 
     pool_groups = group_items_by_candidate_pool(items)
     for (frame_filename, prompt), grouped_items in sorted(pool_groups.items()):
-        image_path = dataset_root / "JPEGImages" / video_id / frame_filename
-        if not image_path.exists():
-            raise FileNotFoundError(f"Image frame not found: {image_path}")
+        image_path = resolve_frame_path(dataset_root, video_id, frame_filename)
 
         pool_dir = task_root / "_candidate_pools" / safe_name(frame_filename) / safe_name(prompt)
         pool_json_path = pool_dir / f"{safe_name(prompt)}.json"

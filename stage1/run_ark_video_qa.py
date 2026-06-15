@@ -22,6 +22,7 @@ from api_config import DEFAULT_BASE_URL, DEFAULT_MODEL, add_api_profile_args, ap
 
 AUTO_DOWNSAMPLE_THRESHOLD = 70
 AUTO_DOWNSAMPLE_STRIDE = 2
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 JSON_OUTPUT_INSTRUCTION = """## Output Format
 
 You MUST output ONLY a valid JSON array. Do not include any additional explanations, titles, notes, or Markdown code blocks. 
@@ -158,7 +159,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         default="../../dataset/mevis/valid",
-        help="Dataset root directory containing JPEGImages/",
+        help="Dataset root directory containing either JPEGImages/<video_id>/ or <video_id>/",
     )
     parser.add_argument(
         "--response-format",
@@ -273,22 +274,45 @@ def _frame_sort_key(frame_path: Path) -> tuple[int, Any]:
         return (1, frame_path.stem)
 
 
+def resolve_video_dir(dataset_root: Path, video_id: str) -> Path:
+    candidates = [
+        dataset_root / "JPEGImages" / video_id,
+        dataset_root / video_id,
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    raise FileNotFoundError(
+        f"Video id {video_id!r} not found. Tried: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
+def resolve_frame_path(video_dir: Path, frame_id: str) -> Path:
+    frame_path = video_dir / frame_id
+    if frame_path.suffix and frame_path.exists():
+        return frame_path
+    stem = frame_path.stem if frame_path.suffix else frame_id
+    for suffix in IMAGE_SUFFIXES:
+        candidate = video_dir / f"{stem}{suffix}"
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Frame listed in meta was not found: {video_dir / frame_id}")
+
+
 def list_frames(video_dir: Path, frame_ids: list[str] | None = None) -> list[Path]:
     if frame_ids:
         frames = []
         for frame_id in frame_ids:
-            frame_name = str(frame_id)
-            frame_path = video_dir / frame_name
-            if frame_path.suffix.lower() != ".jpg":
-                frame_path = video_dir / f"{frame_name}.jpg"
-            if not frame_path.exists():
-                raise FileNotFoundError(f"Frame listed in meta was not found: {frame_path}")
-            frames.append(frame_path)
+            frames.append(resolve_frame_path(video_dir, str(frame_id)))
         return frames
 
-    frames = sorted(video_dir.glob("*.jpg"), key=_frame_sort_key)
+    frames = sorted(
+        [path for path in video_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES],
+        key=_frame_sort_key,
+    )
     if not frames:
-        raise FileNotFoundError(f"No .jpg frames found in {video_dir}")
+        raise FileNotFoundError(f"No image frames with suffix {IMAGE_SUFFIXES} found in {video_dir}")
     return frames
 
 
@@ -364,9 +388,7 @@ def prepare_request(
     max_sampled_frames: int = 10,
 ) -> RequestBundle:
     dataset_root = Path(dataset_root)
-    video_dir = dataset_root / "JPEGImages" / video_id
-    if not video_dir.is_dir():
-        raise FileNotFoundError(f"Video id {video_id!r} not found under {video_dir}")
+    video_dir = resolve_video_dir(dataset_root, video_id)
 
     frames = list_frames(video_dir, frame_ids=frame_ids)
     selected_frames, strategy = select_frames(frames, max_frames=max_sampled_frames)
@@ -582,6 +604,146 @@ def parse_semantic_answer(answer_text: str, target_event: str) -> dict[str, Any]
     return normalize_semantic_parse(extract_json_block(answer_text), target_event)
 
 
+def _is_known_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text not in {"", "unknown", "none", "null", "n/a"}
+
+
+def _guess_node_category(text: str, fallback: str) -> str:
+    fallback = str(fallback or "unknown").strip() or "unknown"
+    if not text:
+        return fallback
+    if fallback != "unknown" and fallback.lower() in text.lower():
+        return fallback
+    return "unknown"
+
+
+def build_semantic_relation_graph(semantic_parse: dict[str, Any]) -> dict[str, Any]:
+    """Build a compact role-constraint graph from the normalized semantic parse."""
+    target_entity = str(semantic_parse.get("target_entity") or "target object").strip() or "target object"
+    target_role = _normalize_target_role(semantic_parse.get("target_role"))
+    action = str(semantic_parse.get("action") or "unknown").strip() or "unknown"
+    voice = _normalize_voice(semantic_parse.get("voice"))
+    segment_target = str(semantic_parse.get("segment_target") or target_entity).strip() or target_entity
+
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "target_0",
+            "type": "target",
+            "category": target_entity,
+            "role": target_role,
+            "text": segment_target,
+            "cardinality": semantic_parse.get("target_cardinality", {"type": "unknown", "count": None}),
+        }
+    ]
+    edges: list[dict[str, Any]] = []
+
+    reference_node_ids: list[str] = []
+    for idx, ref_text in enumerate(_coerce_string_list(semantic_parse.get("reference_entities"))):
+        node_id = f"ref_{idx}"
+        reference_node_ids.append(node_id)
+        nodes.append(
+            {
+                "id": node_id,
+                "type": "reference",
+                "category": _guess_node_category(ref_text, target_entity),
+                "role": "reference",
+                "text": ref_text,
+            }
+        )
+
+    participant_nodes: dict[str, str] = {}
+
+    def add_participant_node(role: str, text: Any) -> str | None:
+        if not _is_known_text(text):
+            return None
+        if role == target_role and str(text).strip() == segment_target:
+            return "target_0"
+        node_id = f"{role}_0"
+        if node_id in participant_nodes.values():
+            return node_id
+        participant_nodes[role] = node_id
+        nodes.append(
+            {
+                "id": node_id,
+                "type": "participant",
+                "category": _guess_node_category(str(text), target_entity),
+                "role": role,
+                "text": str(text).strip(),
+            }
+        )
+        return node_id
+
+    agent_node = "target_0" if target_role == "agent" else add_participant_node("agent", semantic_parse.get("agent"))
+    patient_node = "target_0" if target_role == "patient" else add_participant_node("patient", semantic_parse.get("patient"))
+
+    if _is_known_text(action):
+        if voice == "relational" or reference_node_ids:
+            for ref_node_id in reference_node_ids:
+                edges.append(
+                    {
+                        "source": "target_0",
+                        "relation": action,
+                        "target": ref_node_id,
+                        "polarity": "positive",
+                    }
+                )
+        elif agent_node and patient_node and agent_node != patient_node:
+            edges.append(
+                {
+                    "source": agent_node,
+                    "relation": action,
+                    "target": patient_node,
+                    "polarity": "positive",
+                }
+            )
+
+    if reference_node_ids and not any(edge["target"] in reference_node_ids for edge in edges):
+        for ref_node_id in reference_node_ids:
+            edges.append(
+                {
+                    "source": "target_0",
+                    "relation": "identified_by",
+                    "target": ref_node_id,
+                    "polarity": "positive",
+                }
+            )
+
+    for idx, excluded_text in enumerate(_coerce_string_list(semantic_parse.get("excluded_entities"))):
+        node_id = f"excl_{idx}"
+        nodes.append(
+            {
+                "id": node_id,
+                "type": "excluded",
+                "category": _guess_node_category(excluded_text, target_entity),
+                "role": "excluded",
+                "text": excluded_text,
+            }
+        )
+        edges.append(
+            {
+                "source": "target_0",
+                "relation": "exclude",
+                "target": node_id,
+                "polarity": "negative",
+            }
+        )
+
+    return {
+        "graph_type": "semantic_role_constraint_graph",
+        "schema_version": 1,
+        "target_node": "target_0",
+        "nodes": nodes,
+        "edges": edges,
+        "summary": {
+            "target_role": target_role,
+            "voice": voice,
+            "action": action,
+            "requires_instance_enumeration": bool(semantic_parse.get("requires_instance_enumeration")),
+        },
+    }
+
+
 def apply_semantic_parse_to_record(record: dict[str, Any], semantic_parse: dict[str, Any] | None) -> None:
     if not semantic_parse:
         return
@@ -677,6 +839,7 @@ def build_result_payload(
     }
     if semantic_parse is not None:
         payload["semantic_parse"] = semantic_parse
+        payload["semantic_relation_graph"] = build_semantic_relation_graph(semantic_parse)
     if results is not None:
         payload["results"] = results
     if raw_semantic_response_text is not None:

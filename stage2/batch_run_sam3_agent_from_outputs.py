@@ -23,6 +23,8 @@ from run_sam3_agent_from_batch_result import (
     build_processor,
     import_agent_modules,
     load_result_json,
+    load_result_json_path,
+    resolve_frame_path,
     resolve_agent_prompt,
     safe_name,
     select_result_items,
@@ -46,7 +48,7 @@ def parse_args() -> argparse.Namespace:
         "--dataset-root",
         default="../../dataset/mevis/valid",
         # default="../../dataset/ref-youtube/valid",
-        help="Dataset root directory containing JPEGImages/<video>/",
+        help="Dataset root directory containing either JPEGImages/<video>/ or <video>/",
     )
     parser.add_argument(
         "--output-root",
@@ -176,7 +178,7 @@ def load_error_tasks(
     if not error_dir.exists():
         return tasks
 
-    for error_path in sorted(error_dir.glob("*/*.json")):
+    for error_path in sorted(error_dir.rglob("*.json")):
         try:
             error_info = json.loads(error_path.read_text())
             video_id = error_info["video_id"]
@@ -219,10 +221,13 @@ def list_tasks(
     only_json_ids: set[str] | None,
 ) -> list[dict[str, str]]:
     tasks: list[dict[str, str]] = []
-    for json_path in sorted(batch_root.glob("*/*.json")):
-        video_id = json_path.parent.name
+    for json_path in sorted(batch_root.rglob("*.json")):
+        relative_path = json_path.relative_to(batch_root)
+        if "_errors" in relative_path.parts or json_path.name.startswith("_"):
+            continue
+        video_id = relative_path.parent.as_posix()
         json_id = json_path.stem
-        if video_id == "_errors":
+        if not video_id or video_id == ".":
             continue
         if only_video_ids and video_id not in only_video_ids:
             continue
@@ -264,7 +269,7 @@ def run_one_task(
 ) -> dict[str, Any]:
     video_id = task["video_id"]
     json_id = task["json_id"]
-    result_json = load_result_json(Path(task["result_json_path"]).parent.parent, video_id, json_id)
+    result_json = load_result_json_path(Path(task["result_json_path"]))
     selected_items = select_result_items(result_json, selected_indices)
     run_root = output_root / "sam3_agent" / safe_name(send_generate_request.keywords["model"]) / video_id / str(json_id)
     run_root.mkdir(parents=True, exist_ok=True)
@@ -309,9 +314,7 @@ def run_one_task(
         if not frame_filename:
             raise ValueError(f"Missing actual_frame_filename for object index {obj_idx}")
 
-        image_path = dataset_root / "JPEGImages" / video_id / frame_filename
-        if not image_path.exists():
-            raise FileNotFoundError(f"Image frame not found: {image_path}")
+        image_path = resolve_frame_path(dataset_root, video_id, frame_filename)
 
         item_dir = run_root / f"{safe_name(object_name)}_obj_{obj_idx}"
         pred_json_path = item_dir / "pred.json"

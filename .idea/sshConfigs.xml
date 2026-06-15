@@ -2,7 +2,10 @@
 <project version="4">
   <component name="SshConfigs">
     <configs>
-      <sshConfig authType="PASSWORD" host="xj-member.bitahub.com" id="32c47ddb-b071-4c38-b582-d7bae3d3578c" port="42188" nameFormat="DESCRIPTIVE" username="root" useOpenSSHConfig="true" />
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:300}" host="wlwl-member.bitahub.com" id="c7ddafbb-d8ea-443a-84db-8c0781ea341c" port="42003" customName="bitahub-cs" nameFormat="CUSTOM" username="root" useOpenSSHConfig="true">
+        <option name="customName" value="bitahub-cs" />
+      </sshConfig>
+      <sshConfig authType="PASSWORD" host="wlwl-member.bitahub.com" id="78ddee0d-c68f-495a-afd3-eec3c27d8061" port="42003" nameFormat="DESCRIPTIVE" username="root" />
     </configs>
   </component>
 </project>

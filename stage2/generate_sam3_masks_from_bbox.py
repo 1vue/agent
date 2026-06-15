@@ -19,6 +19,7 @@ from PIL import Image
 
 OBJ_SUFFIX_RE = re.compile(r"_obj_(\d+)$")
 DEFAULT_CHECKPOINT = os.environ.get("SAM3_CHECKPOINT", "checkpoints/sam3.pt")
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,11 +97,25 @@ def numeric_sort_key(stem: str):
     return (0, key)
 
 
+def resolve_video_dir(dataset_root: Path, video_id: str) -> Path:
+    candidates = [
+        dataset_root / "JPEGImages" / video_id,
+        dataset_root / video_id,
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    raise FileNotFoundError(
+        f"Video id {video_id!r} not found. Tried: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
 def sorted_jpeg_frame_files(video_dir: Path) -> list[str]:
     files = [
         p.name
         for p in video_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg"}
+        if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES
     ]
     files.sort(key=lambda name: numeric_sort_key(Path(name).stem))
     return files
@@ -140,10 +155,11 @@ def list_bbox_groups(
 ) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str], list[Path]] = defaultdict(list)
     for txt_path in sorted(bbox_root.rglob("*.txt")):
-        if len(txt_path.relative_to(bbox_root).parts) < 3:
+        relative_parts = txt_path.relative_to(bbox_root).parts
+        if len(relative_parts) < 3:
             continue
-        video_id = txt_path.parent.parent.name
-        json_id = txt_path.parent.name
+        video_id = "/".join(relative_parts[:-2])
+        json_id = relative_parts[-2]
         if only_video_ids and video_id not in only_video_ids:
             continue
         if only_json_ids and json_id not in only_json_ids:
@@ -282,7 +298,7 @@ def process_group(
 ) -> dict[str, Any]:
     video_id = group["video_id"]
     json_id = group["json_id"]
-    video_dir = dataset_root / "JPEGImages" / video_id
+    video_dir = resolve_video_dir(dataset_root, video_id)
     frame_files = sorted_jpeg_frame_files(video_dir)
     frame_name_to_index = {name: idx for idx, name in enumerate(frame_files)}
     if not frame_files:
